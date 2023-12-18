@@ -296,12 +296,16 @@ class GitCommitHelper:
         self._repo = repo
         self._cached_trees: MutableMapping[str, GitTree] = {}  # key is the SHA of the commit
 
-        # TODO what happens if there are no commits at all in the repo?
-        self._commits: list[Commit] = [
-            commit for commit in
-            github_client.paginate(github_client.rest.repos.list_commits, owner=owner, repo=repo, sha=default_branch,
-                                   since=cutoff_date)
-        ]
+        try:
+            self._commits: list[Commit] = [
+                commit for commit in
+                github_client.paginate(github_client.rest.repos.list_commits, owner=owner, repo=repo,
+                                       sha=default_branch, since=cutoff_date)
+            ]
+        except RequestFailed as e:
+            # Repository might still be empty, or the default branch might have been renamed
+            if e.response.status_code == 409:
+                self._commits = []
 
         # The GitHub API returns the commits in reverse chronological order, but we want them in chronological order
         self._commits.reverse()
