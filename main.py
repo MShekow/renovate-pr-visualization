@@ -9,7 +9,7 @@ from renovate_parser import get_renovate_prs, get_database_entities, get_reposit
 
 if __name__ == '__main__':
     configuration = load_and_verify_configuration()
-    print("System check successful, starting to fetch Renovate PRs (this may take a few minutes) ...")
+    print("Configuration check successful, starting to fetch Renovate PRs (this may take a few minutes) ...")
     renovate_prs = get_renovate_prs(configuration)
     print(f"Found {len(renovate_prs.dependency_prs)} Renovate PRs, converting them to them to database entities ...")
     database_dependency_prs = get_database_entities(renovate_prs.dependency_prs, configuration)

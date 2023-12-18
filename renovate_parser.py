@@ -9,6 +9,7 @@ from typing import Optional, MutableMapping
 
 import dateparser
 from githubkit import GitHub
+from githubkit.exception import RequestFailed
 from githubkit.rest import PullRequestSimple, Commit, GitTree
 from marko.ext.gfm import gfm
 from marko.ext.gfm.elements import Table
@@ -20,6 +21,8 @@ from sqlalchemy.orm import Session
 from conf import Configuration
 from database_models import PullRequest, PrCloseType, DependencyUpdate, Base, RepositoryOnboardingStatus, \
     OnboardingType, DependencyUpdateType
+
+PR_TITLE_REGEX = re.compile(r"^(chore|fix)\(deps\): (bump|update) ")
 
 
 def has_relevant_pr_title(renovate_pr_title: str) -> bool:
@@ -42,13 +45,19 @@ def has_relevant_pr_title(renovate_pr_title: str) -> bool:
     Update <group name with possible spaces> to v<version> (major)
         Used when there are multiple dependencies which ALL have the SAME updates (old -> new), on major level
 
+    If the repository mainly used semantic commit messages, then the PR title may also have the following patterns:
+    chore(deps): bump <dependency> from <version> to <version>
+    chore(deps): update <dependency> to <version>
+    fix(deps): update <dependency> to <version>
+
     where <version> is either a single number indicating major updates (e.g. "2" or "2023") or a full version number
     (e.g. "1.2.3" or "2023.1.2"). <version> may also have a " [SECURITY]" postfix.
-
-    Because "Update <group name with possible spaces>" is the most generic pattern of all papterns,
-    the implementation is very simple.
     """
-    return renovate_pr_title.startswith("Update ")
+    if renovate_pr_title.startswith("Update "):
+        return True
+    if PR_TITLE_REGEX.match(renovate_pr_title):
+        return True
+    return False
 
 
 def has_label(pr: PullRequestSimple, label: str) -> bool:
@@ -83,7 +92,7 @@ def get_renovate_prs(config: Configuration) -> RenovatePrs:
                     renovate_prs.onboarding_prs.append(pr)
                     continue
 
-                if config.renovate_pr_label is None or has_label(pr, config.renovate_pr_label):
+                if not config.renovate_pr_label or has_label(pr, config.renovate_pr_label):
                     if has_relevant_pr_title(pr.title):
                         renovate_prs.dependency_prs.append(pr)
 
@@ -123,7 +132,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestS
     markdown_document = gfm.parse(renovate_pr.body)
 
     dependencies_table: Optional[Table] = None
-    for child in markdown_document.children[:4]:
+    for child in markdown_document.children[:5]:
         if isinstance(child, Table):
             dependencies_table = child
             break
