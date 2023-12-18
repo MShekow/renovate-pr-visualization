@@ -29,6 +29,7 @@ class OnboardingType(Enum):
 
 
 class DependencyUpdateType(Enum):
+    digest = "digest"
     patch = "patch"
     minor = "minor"
     major = "major"

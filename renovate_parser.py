@@ -122,6 +122,16 @@ def clean_version(version: str) -> str:
         raise ValueError(f"Unable to parse version {version!r}, regex for major/minor/patch did not find any matches")
 
 
+DIGEST_REGEX = re.compile(r"^[a-f0-9]{7,40}$")
+
+
+def is_digest_version(version: str) -> bool:
+    """
+    Returns True if the given version looks like a digest, e.g. a (short) Git hash, or a (Docker) SHA256 hash.
+    """
+    return DIGEST_REGEX.match(version) is not None
+
+
 def parse_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestSimple,
                              config: Configuration) -> list[DependencyUpdate]:
     """
@@ -203,23 +213,26 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestS
             raise ValueError(f"Unable to parse dependency table: old/new versions are not strings: "
                              f"{old_version_str!r}, {new_version_str!r}")
 
-        try:
-            old_version = Version(clean_version(old_version_str))
-            new_version = Version(clean_version(new_version_str))
-        except (InvalidVersion, ValueError) as e:
-            raise ValueError(f"Unable to parse old/new versions '{old_version_str}' / '{new_version_str}' for "
-                             f"dependency {dependency_name}: {e}") from None
-
-        if has_label(renovate_pr, config.renovate_pr_security_label):
-            update_type = DependencyUpdateType.security
-        elif old_version.major != new_version.major:
-            update_type = DependencyUpdateType.major
-            if config.detect_multiple_major_updates and (new_version.major - old_version.major) > 1:
-                update_type = DependencyUpdateType.multiple_major
-        elif old_version.minor != new_version.minor:
-            update_type = DependencyUpdateType.minor
+        if is_digest_version(old_version_str):
+            update_type = DependencyUpdateType.digest
         else:
-            update_type = DependencyUpdateType.patch
+            try:
+                old_version = Version(clean_version(old_version_str))
+                new_version = Version(clean_version(new_version_str))
+            except (InvalidVersion, ValueError) as e:
+                raise ValueError(f"Unable to parse old/new versions '{old_version_str}' / '{new_version_str}' for "
+                                 f"dependency {dependency_name}: {e}") from None
+
+            if has_label(renovate_pr, config.renovate_pr_security_label):
+                update_type = DependencyUpdateType.security
+            elif old_version.major != new_version.major:
+                update_type = DependencyUpdateType.major
+                if config.detect_multiple_major_updates and (new_version.major - old_version.major) > 1:
+                    update_type = DependencyUpdateType.multiple_major
+            elif old_version.minor != new_version.minor:
+                update_type = DependencyUpdateType.minor
+            else:
+                update_type = DependencyUpdateType.patch
 
         dependency_updates.append(DependencyUpdate(
             dependency_name=dependency_name,
