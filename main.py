@@ -4,11 +4,13 @@ statuses.
 """
 import os
 import re
-from dataclasses import dataclass
-from typing import Tuple, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Tuple, Optional, MutableMapping
 
+import dateparser
 from githubkit import GitHub
-from githubkit.rest import PullRequestSimple
+from githubkit.rest import PullRequestSimple, Commit, GitTree
 from marko.ext.gfm import gfm
 from marko.ext.gfm.elements import Table
 from marko.inline import Link, InlineElement, CodeSpan, RawText
@@ -29,6 +31,8 @@ class Configuration:
     renovate_pr_security_label: str
     renovate_github_user: Optional[str]
     renovate_onboarding_pr_regex: Optional[str]
+    renovate_onboarding_sampling_max_weeks: int
+    renovate_onboarding_sampling_interval_weeks: int
 
 
 def system_check() -> Configuration:
@@ -46,7 +50,10 @@ def system_check() -> Configuration:
         renovate_pr_label=os.getenv("RENOVATE_PR_LABEL"),
         renovate_pr_security_label=os.getenv("RENOVATE_PR_SECURITY_LABEL"),
         renovate_github_user=os.getenv("RENOVATE_USER"),
-        renovate_onboarding_pr_regex=os.getenv("RENOVATE_ONBOARDING_PR_REGEX", r"^Configure Renovate")
+        renovate_onboarding_pr_regex=os.getenv("RENOVATE_ONBOARDING_PR_REGEX", r"^Configure Renovate"),
+        renovate_onboarding_sampling_max_weeks=int(os.getenv("RENOVATE_ONBOARDING_STATUS_SAMPLING_MAX_PAST_WEEKS")),
+        renovate_onboarding_sampling_interval_weeks=int(
+            os.getenv("RENOVATE_ONBOARDING_STATUS_SAMPLING_INTERVAL_IN_WEEKS")),
     )
 
     if not configuration.database_with_credentials:
@@ -63,6 +70,10 @@ def system_check() -> Configuration:
     if not configuration.renovate_pr_security_label:
         raise ValueError("Environment variable RENOVATE_PR_SECURITY_LABEL must be set to the label that Renovate "
                          "uses to mark security PRs (e.g. 'security')")
+    if (configuration.renovate_onboarding_sampling_max_weeks <= 0
+            or configuration.renovate_onboarding_sampling_max_weeks <= 0):
+        raise ValueError("Environment variables RENOVATE_ONBOARDING_STATUS_SAMPLING_MAX_PAST_WEEKS and "
+                         "RENOVATE_ONBOARDING_STATUS_SAMPLING_INTERVAL_IN_WEEKS must be set to positive numbers")
 
     # Check the PostgreSQL configuration
     engine = create_engine(f"postgresql+psycopg2://{configuration.database_with_credentials}")
@@ -84,8 +95,7 @@ def system_check() -> Configuration:
             else:
                 configuration.github_repos.append((owner, repo))
         else:
-            repos = github.rest.repos.list_for_org(org=owner_or_repo).parsed_data
-            for repo in repos:
+            for repo in github.paginate(github.rest.repos.list_for_org, org=owner_or_repo):
                 configuration.github_repos.append((owner_or_repo, repo.name))
 
     # Verify that there are no duplicates in configuration.github_repos (could happen if the user provides both
@@ -136,19 +146,31 @@ def has_label(pr: PullRequestSimple, label: str) -> bool:
     return False
 
 
-def get_renovate_prs(config: Configuration) -> list[PullRequestSimple]:
+@dataclass
+class RenovatePrs:
+    dependency_prs: list[PullRequestSimple] = field(default_factory=list)
+    onboarding_prs: list[PullRequestSimple] = field(default_factory=list)
+
+
+def get_renovate_prs(config: Configuration) -> RenovatePrs:
     """
     Returns all those PRs from the specified repositories that were created by Renovate and that have a relevant title.
     """
     github = GitHub(config.github_pat, base_url=config.github_base_url)
+    onboarding_title_regex = re.compile(configuration.renovate_onboarding_pr_regex)
 
-    renovate_prs = []
+    renovate_prs = RenovatePrs()
+
     for owner, repo in config.github_repos:
         for pr in github.paginate(github.rest.pulls.list, owner=owner, repo=repo, state="all"):
-            if config.renovate_pr_label is None or has_label(pr, config.renovate_pr_label):
-                if config.renovate_github_user is None or pr.user.login == config.renovate_github_user:
+            if config.renovate_github_user is None or pr.user.login == config.renovate_github_user:
+                if onboarding_title_regex.search(pr.title):
+                    renovate_prs.onboarding_prs.append(pr)
+                    continue
+
+                if config.renovate_pr_label is None or has_label(pr, config.renovate_pr_label):
                     if has_relevant_pr_title(pr.title):
-                        renovate_prs.append(pr)
+                        renovate_prs.dependency_prs.append(pr)
 
     return renovate_prs
 
@@ -330,62 +352,138 @@ def save_database_entities(database_prs: list[PullRequest],
         session.commit()
 
 
-def get_full_repository_name_from_pr_url(pr_url: str) -> str:
+def get_onboarding_prs_for_repo(onboarding_prs: list[PullRequestSimple],
+                                owner: str, repo: str) -> list[PullRequestSimple]:
     """
-    Extracts '{owner}/{repo}' from pr_url, which has the form 'https://<base-url>/repos/{owner}/{repo}/pulls/<number>'.
+    Returns all those PRs from the provided list that are for the specified repository.
     """
-    return pr_url.split("/repos/")[1].split("/pulls/")[0]
+    return [pr for pr in onboarding_prs if pr.base.repo.full_name == f"{owner}/{repo}"]
 
 
-def get_repository_contains_renovate_json_file(github_client: GitHub, owner: str, repo: str) -> bool:
-    """
-    Returns whether the given repository contains a `renovate.json[5]` file in the root of the repo's default branch.
-    """
-    repo_default_branch = github_client.rest.repos.get(owner=owner, repo=repo).parsed_data.default_branch
-    git_tree = github_client.rest.git.get_tree(owner=owner, repo=repo, tree_sha=repo_default_branch).parsed_data
-    for tree_entry in git_tree.tree:
-        if tree_entry.path in ["renovate.json", "renovate.json5"]:
-            return True
-    return False
+class GitCommitHelper:
+    def __init__(self, github_client: GitHub, owner: str, repo: str, cutoff_date: datetime):
+        default_branch = github_client.rest.repos.get(owner=owner, repo=repo).parsed_data.default_branch
+        self._github_client = github_client
+        self._owner = owner
+        self._repo = repo
+        self._cached_trees: MutableMapping[str, GitTree] = {}  # key is the SHA of the commit
+
+        # TODO what happens if there are no commits at all in the repo?
+        self._commits: list[Commit] = [
+            commit for commit in
+            github_client.paginate(github_client.rest.repos.list_commits, owner=owner, repo=repo, sha=default_branch,
+                                   since=cutoff_date)
+        ]
+
+        # The GitHub API returns the commits in reverse chronological order, but we want them in chronological order
+        self._commits.reverse()
+
+    def _get_closest_commit(self, sample_datetime: datetime) -> Optional[Commit]:
+        """
+        Returns the closest commit to the given datetime.
+        """
+        if not self._commits:
+            return None
+        closest_commit = self._commits[0]
+        for commit in self._commits[1:]:
+            commit_date = dateparser.parse(commit.commit.author.date)
+            if commit_date <= sample_datetime:
+                closest_commit = commit
+            else:
+                break
+
+        return closest_commit
+
+    def _get_tree(self, sha: str) -> GitTree:
+        if sha not in self._cached_trees:
+            self._cached_trees[sha] = self._github_client.rest.git.get_tree(owner=self._owner, repo=self._repo,
+                                                                            tree_sha=sha).parsed_data
+        return self._cached_trees[sha]
+
+    def contains_renovate_json_file(self, sample_datetime: datetime) -> bool:
+        closest_commit = self._get_closest_commit(sample_datetime)
+        if not closest_commit:
+            return False
+
+        for tree_entry in self._get_tree(closest_commit.sha).tree:
+            if tree_entry.path in ["renovate.json", "renovate.json5"]:
+                return True
+        return False
 
 
-def has_renovate_onboarding_pr(github_client: GitHub, config: Configuration, owner: str, repo: str) -> bool:
+def has_renovate_onboarding_pr(onboarding_prs: list[PullRequestSimple], sample_datetime: datetime,
+                               sampling_interval_weeks: int) -> bool:
     """
-    Returns True if there is an open Renovate Onboarding PR, which adds a `renovate.json[5]` file to the root of the
-    repo's default branch.
+    Returns True if there is an onboarding PR that has been created at/before sample_datetime and that was still
+    open after the sampling interval.
     """
-    onboarding_title_regex = re.compile(configuration.renovate_onboarding_pr_regex)
-    for pr in github_client.paginate(github_client.rest.pulls.list, owner=owner, repo=repo, state="open"):
-        if config.renovate_github_user is None or pr.user.login == config.renovate_github_user:
-            if onboarding_title_regex.search(pr.title):
+    for pr in onboarding_prs:
+        if pr.created_at <= sample_datetime:
+            closed_date = pr.closed_at or pr.merged_at
+            if closed_date is None or closed_date > sample_datetime + timedelta(weeks=sampling_interval_weeks):
                 return True
     return False
 
 
-def get_repository_onboarding_status(renovate_prs: list[PullRequestSimple],
+def get_sampling_dates(config: Configuration) -> list[datetime]:
+    """
+    Returns a list of Monday (8 AM UTC) datetimes, spread out in regular intervals (see
+    config.renovate_onboarding_sampling_interval_weeks), starting from
+    <Monday of this week> - <config.renovate_onboarding_sampling_max_weeks> weeks, until <Monday of this week>
+    """
+    # get monday 8 AM of the current week
+    now = datetime.now(timezone.utc)
+    days_to_subtract = (now.weekday()) % 7
+    monday = now - timedelta(days=days_to_subtract)
+    monday_8am = monday.replace(hour=8, minute=0, second=0, microsecond=0)
+
+    sampling_dates = [monday_8am]
+
+    for i in range(config.renovate_onboarding_sampling_max_weeks // config.renovate_onboarding_sampling_interval_weeks):
+        sampling_dates.append(
+            monday_8am - timedelta(weeks=(i + 1) * config.renovate_onboarding_sampling_interval_weeks))
+
+    sampling_dates.reverse()
+    return sampling_dates
+
+
+def get_repository_onboarding_status(onboarding_prs: list[PullRequestSimple],
                                      config: Configuration) -> list[RepositoryOnboardingStatus]:
     """
-    Extracts the RepositoryOnboardingStatus database entities from the provided PRs.
+    Extracts the RepositoryOnboardingStatus database entities for the provided repositories, sampling them in regular
+    intervals.
 
-    The onboarding status of a repository is defined as follows:
+    The onboarding status of a repository (at a specific point in time) is defined as follows:
     - "onboarded": if there is a `renovate.json[5]` file in the root of the repo's default branch
     - "onboarding": if there is a PR open that adds a `renovate.json[5]` file in the root of the repo's default branch
     - "disabled": if both "onboarded" and "onboarding" are false
+
+    Note that for determining the onboarding status, only the DEFAULT Git branch is considered, and we assume that
+    whatever is the default branch now, has also been the default branch at any point in the past.
     """
     github = GitHub(configuration.github_pat, base_url=configuration.github_base_url)
     onboarding_statuses: list[RepositoryOnboardingStatus] = []
     for owner, repo in config.github_repos:
-        has_renovate_json_file = get_repository_contains_renovate_json_file(github, owner, repo)
-        onboarding_status = OnboardingType.onboarded if has_renovate_json_file else OnboardingType.disabled
-        if has_renovate_onboarding_pr(github, config, owner, repo):
-            onboarding_status = OnboardingType.in_progress
+        onboarding_prs = get_onboarding_prs_for_repo(onboarding_prs, owner, repo)
+        week_start_dates = get_sampling_dates(config)
+        cutoff_date = week_start_dates[0] - timedelta(weeks=1)  # add one week to have some "leeway"
+        commit_helper = GitCommitHelper(github, owner, repo, cutoff_date=cutoff_date)
 
-        onboarding_statuses.append(
-            RepositoryOnboardingStatus(
-                repo=f"{owner}/{repo}",
-                onboarded=onboarding_status,
+        for week_start_date in week_start_dates:
+            has_renovate_json_file = commit_helper.contains_renovate_json_file(week_start_date)
+
+            onboarding_status = OnboardingType.onboarded if has_renovate_json_file else OnboardingType.disabled
+            if has_renovate_onboarding_pr(onboarding_prs, week_start_date,
+                                          config.renovate_onboarding_sampling_interval_weeks):
+                onboarding_status = OnboardingType.in_progress
+
+            onboarding_statuses.append(
+                RepositoryOnboardingStatus(
+                    repo=f"{owner}/{repo}",
+                    onboarded=onboarding_status,
+                    sample_date=week_start_date,
+                )
             )
-        )
 
     return onboarding_statuses
 
@@ -394,10 +492,10 @@ if __name__ == '__main__':
     configuration = system_check()
     print("System check successful, starting to fetch Renovate PRs (this may take a few minutes) ...")
     renovate_prs = get_renovate_prs(configuration)
-    print(f"Found {len(renovate_prs)} Renovate PRs, converting them to them to database entities ...")
-    database_prs = get_database_entities(renovate_prs)
-    print("Fetching repository onboarding statuses ...")
-    database_onboarding_statuses = get_repository_onboarding_status(renovate_prs, configuration)
+    print(f"Found {len(renovate_prs.dependency_prs)} Renovate PRs, converting them to them to database entities ...")
+    database_dependency_prs = get_database_entities(renovate_prs.dependency_prs)
+    print("Fetching repository onboarding statuses (this may take several minutes) ...")
+    database_onboarding_statuses = get_repository_onboarding_status(renovate_prs.onboarding_prs, configuration)
     print("Storing database entities in the database (deleting old entries) ...")
-    save_database_entities(database_prs, database_onboarding_statuses, configuration)
+    save_database_entities(database_dependency_prs, database_onboarding_statuses, configuration)
     print("Finished importing data successfully")

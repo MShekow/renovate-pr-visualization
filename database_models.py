@@ -31,10 +31,12 @@ class RepositoryOnboardingStatus(Base):
     __tablename__ = "repository_onboarding_status"
     id: Mapped[int] = mapped_column(primary_key=True)
     repo: Mapped[str] = mapped_column(String(200))
+    sample_date: Mapped[datetime]
     onboarded: Mapped[OnboardingType]
 
     def __repr__(self) -> str:
-        return f"RepositoryOnboardingStatus(id={self.id!r}, repo={self.repo!r}, onboarded={self.onboarded!r})"
+        return (f"RepositoryOnboardingStatus(id={self.id!r}, repo={self.repo!r}, sample_date={self.sample_date!r}, "
+                f"onboarded={self.onboarded!r})")
 
 
 class PullRequest(Base):

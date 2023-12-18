@@ -4,3 +4,4 @@ githubkit==0.10.7
 psycopg2-binary==2.9.9
 marko==2.0.2
 packaging==23.2
+dateparser==1.2.0
