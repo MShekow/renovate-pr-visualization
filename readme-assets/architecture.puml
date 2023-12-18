@@ -1,0 +1,26 @@
+@startuml
+!include <C4/C4_Container.puml>
+!include <logos/postgresql.puml>
+!include <logos/python.puml>
+!include <logos/github.puml>
+!include <logos/metabase.puml>
+
+title (C4 Model) Container diagram for Renovate PR visualization tool
+
+Person(user, User, "A customer of the bank, with personal bank accounts")
+
+System_Ext(github, "GitHub (Enterprise)", "<$github>\n\nStores all Git repos, including PRs from Renovate")
+
+System_Boundary(tool, "Renovate PR visualization system") {
+    Container(metabase, "Metabase", "BI tool", "<$metabase>\n\nRenders visual dashboard that visualizes the Renovate data")
+    Container(datascraper, "Data Scraper", "Python script", "<$python>\n\n**main.py** scrapes PRs and repository onboarding statuses caused by Renovate, parses the dependencies from the Renovate PR bodies, and transforms this data to relational entities")
+    ContainerDb(database, "Database", "RDBMS server", "<$postgresql>\n\nStores the transformed data in tables 'dependency_update', 'pull_request' and 'repository_onboarding_status'")
+}
+
+Rel(datascraper, database, "Persists entities using SQLAlchemy ORM, replacing(!) all existing entities", "PostgreSQL message protocol")
+Rel_L(datascraper, github, "Calls GitHub APIs", "REST")
+Rel(metabase, database, "Queries relational data for visualization", "PostgreSQL message protocol")
+Rel_D(user, metabase, "Uses", "Browser / HTTPS")
+Rel_D(user, datascraper, "Manually triggers (on demand) to update data", "Browser / HTTPS")
+
+@enduml

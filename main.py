@@ -1,5 +1,9 @@
-# This script fills the provided postgres database with PRs
+"""
+This script fills the provided PostgreSQL database with information about Renovate PRs and repository onboarding
+statuses.
+"""
 import os
+import re
 from dataclasses import dataclass
 from typing import Tuple, Optional
 
@@ -12,44 +16,37 @@ from packaging.version import Version, InvalidVersion
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from database_models import PullRequest, PrCloseType, DependencyUpdate, Base
+from database_models import PullRequest, PrCloseType, DependencyUpdate, Base, RepositoryOnboardingStatus, OnboardingType
 
-
-# Configuration parameters (environment variables):
-# DATABASE_WITH_CREDS: the PostgreSQL database into which the PRs are written,
-#   format: "<username>:<password>@<host>[:<port>]/<database-name>"
-# GITHUB_BASE_URL: the base URL of the GitHub API to use (optional, if omitted, the default is "https://api.github.com")
-# GITHUB_PAT: the GitHub personal access token to use for the GitHub API
-# GITHUB_REPOS: comma-separated list of GitHub repositories to fetch Renovate PRs from,
-#   format: "<owner>/<repo>,<owner>/<repo>,<owner>/<repo>,..."
-# RENOVATE_PR_LABEL: the label that Renovate uses to mark PRs (e.g. "dependencies")
-# RENOVATE_PR_SECURITY_LABEL: the label that Renovate uses to mark security PRs (e.g. "security")
-# RENOVATE_USER: the GitHub username that Renovate uses to create PRs (optional)
 
 @dataclass
 class Configuration:
     database_with_credentials: str
     github_base_url: Optional[str]
     github_pat: str
-    github_repos: list[Tuple[str, str]]  # list of (owner, repo) tuples
+    github_repos: list[Tuple[str, str]]  # list of (owner, repo) tuples, after dynamically expanding repos
     renovate_pr_label: str
     renovate_pr_security_label: str
     renovate_github_user: Optional[str]
+    renovate_onboarding_pr_regex: Optional[str]
 
 
 def system_check() -> Configuration:
     """
     Checks whether all required environment variables are present and checks the PostgreSQL database connection as
     well as the GitHub API connection.
+
+    See the .env.example file for the documentation of the environment variables.
     """
     configuration = Configuration(
         database_with_credentials=os.getenv("DATABASE_WITH_CREDS"),
         github_base_url=os.getenv("GITHUB_BASE_URL", "https://api.github.com"),
         github_pat=os.getenv("GITHUB_PAT"),
-        github_repos=[tuple(repo.split("/")) for repo in os.getenv("GITHUB_REPOS").split(",")],
+        github_repos=[],  # will be filled below
         renovate_pr_label=os.getenv("RENOVATE_PR_LABEL"),
         renovate_pr_security_label=os.getenv("RENOVATE_PR_SECURITY_LABEL"),
         renovate_github_user=os.getenv("RENOVATE_USER"),
+        renovate_onboarding_pr_regex=os.getenv("RENOVATE_ONBOARDING_PR_REGEX", r"^Configure Renovate")
     )
 
     if not configuration.database_with_credentials:
@@ -57,12 +54,12 @@ def system_check() -> Configuration:
                          "to '<username>:<password>@<host>[:<port>]/<database-name>'")
     if not configuration.github_pat:
         raise ValueError("Environment variable GITHUB_PAT must be set to a valid GitHub personal access token")
-    if not configuration.github_repos:
+    github_repos_and_owners = os.getenv("GITHUB_REPOS").split(",")
+    if not github_repos_and_owners:
         raise ValueError("Environment variable GITHUB_REPOS must be set to a comma-separated list of GitHub "
-                         "repositories in the format '<owner>/<repo>,<owner>/<repo>,<owner>/<repo>,...'")
-    if not configuration.renovate_pr_label:
-        raise ValueError("Environment variable RENOVATE_PR_LABEL must be set to the label that Renovate uses to mark "
-                         "PRs (e.g. 'dependencies')")
+                         "repositories/owners, where each entry has the form '<owner>/<repo>' or '<owner>'")
+    if not configuration.renovate_pr_label and not configuration.renovate_github_user:
+        raise ValueError("At least one of the environment variables RENOVATE_PR_LABEL or RENOVATE_USER must be set")
     if not configuration.renovate_pr_security_label:
         raise ValueError("Environment variable RENOVATE_PR_SECURITY_LABEL must be set to the label that Renovate "
                          "uses to mark security PRs (e.g. 'security')")
@@ -76,9 +73,26 @@ def system_check() -> Configuration:
     github = GitHub(configuration.github_pat, base_url=configuration.github_base_url)
     github.rest.users.get_authenticated()
 
-    # Verify that all specified repositories exist
-    for owner, repo in configuration.github_repos:
-        github.rest.repos.get(owner=owner, repo=repo)
+    # Verify that all specified repositories exist, and also expand the repositories of organizations
+    for owner_or_repo in github_repos_and_owners:
+        if '/' in owner_or_repo:
+            owner, repo = owner_or_repo.split("/")
+            try:
+                github.rest.repos.get(owner=owner, repo=repo)
+            except Exception as e:
+                raise ValueError(f"Unable to find repository {owner_or_repo}, aborting: {e}")
+            else:
+                configuration.github_repos.append((owner, repo))
+        else:
+            repos = github.rest.repos.list_for_org(org=owner_or_repo).parsed_data
+            for repo in repos:
+                configuration.github_repos.append((owner_or_repo, repo.name))
+
+    # Verify that there are no duplicates in configuration.github_repos (could happen if the user provides both
+    # "some-owner" AND "some-owner/some-repo" in the environment variable GITHUB_REPOS)
+    if len(configuration.github_repos) != len(set(configuration.github_repos)):
+        raise ValueError(f"There are duplicate repositories in the configuration, "
+                         f"aborting: {configuration.github_repos}")
 
     return configuration
 
@@ -131,7 +145,7 @@ def get_renovate_prs(config: Configuration) -> list[PullRequestSimple]:
     renovate_prs = []
     for owner, repo in config.github_repos:
         for pr in github.paginate(github.rest.pulls.list, owner=owner, repo=repo, state="all"):
-            if has_label(pr, config.renovate_pr_label):
+            if config.renovate_pr_label is None or has_label(pr, config.renovate_pr_label):
                 if config.renovate_github_user is None or pr.user.login == config.renovate_github_user:
                     if has_relevant_pr_title(pr.title):
                         renovate_prs.append(pr)
@@ -139,25 +153,27 @@ def get_renovate_prs(config: Configuration) -> list[PullRequestSimple]:
     return renovate_prs
 
 
+MAJOR_MINOR_PATCH_REGEX = re.compile(r"\d+(?:\.\d+){0,2}")
+
+
 def clean_version(version: str) -> str:
     """
-    Cleans the given version string, removing any unexpected characters.
-    """
-    version = version.strip("^").strip("~")
-    version = version.replace("x", "0")  # simple hack to handle version updates such as "1.x -> 2.x"
-    if "-" in version:
-        version_candidates = version.split("-")
-        if len(version_candidates) > 1:
-            # Handle something like "1.2.3-alpha.1", "stable-v1.2.3" or "6.0.14-alpine3.17-amd64",
-            # simply by taking the first candidate that is a valid version
-            for candidate in version_candidates:
-                try:
-                    Version(candidate)
-                    return candidate
-                except InvalidVersion:
-                    pass
+    Cleans the given version string, removing any unexpected characters, so that Python's packaging.Version class can
+    parse it successfully.
 
-    return version
+    Examples for patterns that can successfully be parsed:
+    - "^1.2.3" -> "1.2.3"
+    - "~1.2.3" -> "1.2.3"
+    - "1.2.3-alpha.1" -> "1.2.3"
+    - "stable-v1.2.3" -> "1.2.3"
+    - "1.x" -> "1.0" (to handle version updates such as "1.x -> 2.x")
+    """
+    version = version.replace("x", "0")
+    if match := MAJOR_MINOR_PATCH_REGEX.search(version):
+        version = match.group()
+        return version
+    else:
+        raise ValueError(f"Unable to parse version {version!r}, regex for major/minor/patch did not find any matches")
 
 
 def add_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestSimple, config: Configuration) -> None:
@@ -239,8 +255,12 @@ def add_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestSim
             raise ValueError(f"Unable to parse dependency table: old/new versions are not strings: "
                              f"{old_version_str!r}, {new_version_str!r}")
 
-        old_version = Version(clean_version(old_version_str))
-        new_version = Version(clean_version(new_version_str))
+        try:
+            old_version = Version(clean_version(old_version_str))
+            new_version = Version(clean_version(new_version_str))
+        except (InvalidVersion, ValueError) as e:
+            raise ValueError(f"Unable to parse old/new versions '{old_version_str}' / '{new_version_str}' for "
+                             f"dependency {dependency_name}: {e}") from None
 
         if has_label(renovate_pr, config.renovate_pr_security_label):
             update_type = "security"
@@ -295,20 +315,89 @@ def get_database_entities(renovate_prs: list[PullRequestSimple]) -> list[PullReq
     return database_prs
 
 
-def save_prs_to_database(database_prs: list[PullRequest], configuration: Configuration) -> None:
+def save_database_entities(database_prs: list[PullRequest],
+                           database_onboarding_statuses: list[RepositoryOnboardingStatus],
+                           configuration: Configuration) -> None:
     """
-    Saves the given PRs to the PostgreSQL database.
+    Saves the given database entities to the PostgreSQL database, clearing all old records.
     """
     engine = create_engine(f"postgresql+psycopg2://{configuration.database_with_credentials}")
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         session.add_all(database_prs)
+        session.add_all(database_onboarding_statuses)
         session.commit()
+
+
+def get_full_repository_name_from_pr_url(pr_url: str) -> str:
+    """
+    Extracts '{owner}/{repo}' from pr_url, which has the form 'https://<base-url>/repos/{owner}/{repo}/pulls/<number>'.
+    """
+    return pr_url.split("/repos/")[1].split("/pulls/")[0]
+
+
+def get_repository_contains_renovate_json_file(github_client: GitHub, owner: str, repo: str) -> bool:
+    """
+    Returns whether the given repository contains a `renovate.json[5]` file in the root of the repo's default branch.
+    """
+    repo_default_branch = github_client.rest.repos.get(owner=owner, repo=repo).parsed_data.default_branch
+    git_tree = github_client.rest.git.get_tree(owner=owner, repo=repo, tree_sha=repo_default_branch).parsed_data
+    for tree_entry in git_tree.tree:
+        if tree_entry.path in ["renovate.json", "renovate.json5"]:
+            return True
+    return False
+
+
+def has_renovate_onboarding_pr(github_client: GitHub, config: Configuration, owner: str, repo: str) -> bool:
+    """
+    Returns True if there is an open Renovate Onboarding PR, which adds a `renovate.json[5]` file to the root of the
+    repo's default branch.
+    """
+    onboarding_title_regex = re.compile(configuration.renovate_onboarding_pr_regex)
+    for pr in github_client.paginate(github_client.rest.pulls.list, owner=owner, repo=repo, state="open"):
+        if config.renovate_github_user is None or pr.user.login == config.renovate_github_user:
+            if onboarding_title_regex.search(pr.title):
+                return True
+    return False
+
+
+def get_repository_onboarding_status(renovate_prs: list[PullRequestSimple],
+                                     config: Configuration) -> list[RepositoryOnboardingStatus]:
+    """
+    Extracts the RepositoryOnboardingStatus database entities from the provided PRs.
+
+    The onboarding status of a repository is defined as follows:
+    - "onboarded": if there is a `renovate.json[5]` file in the root of the repo's default branch
+    - "onboarding": if there is a PR open that adds a `renovate.json[5]` file in the root of the repo's default branch
+    - "disabled": if both "onboarded" and "onboarding" are false
+    """
+    github = GitHub(configuration.github_pat, base_url=configuration.github_base_url)
+    onboarding_statuses: list[RepositoryOnboardingStatus] = []
+    for owner, repo in config.github_repos:
+        has_renovate_json_file = get_repository_contains_renovate_json_file(github, owner, repo)
+        onboarding_status = OnboardingType.onboarded if has_renovate_json_file else OnboardingType.disabled
+        if has_renovate_onboarding_pr(github, config, owner, repo):
+            onboarding_status = OnboardingType.in_progress
+
+        onboarding_statuses.append(
+            RepositoryOnboardingStatus(
+                repo=f"{owner}/{repo}",
+                onboarded=onboarding_status,
+            )
+        )
+
+    return onboarding_statuses
 
 
 if __name__ == '__main__':
     configuration = system_check()
+    print("System check successful, starting to fetch Renovate PRs (this may take a few minutes) ...")
     renovate_prs = get_renovate_prs(configuration)
+    print(f"Found {len(renovate_prs)} Renovate PRs, converting them to them to database entities ...")
     database_prs = get_database_entities(renovate_prs)
-    save_prs_to_database(database_prs, configuration)
+    print("Fetching repository onboarding statuses ...")
+    database_onboarding_statuses = get_repository_onboarding_status(renovate_prs, configuration)
+    print("Storing database entities in the database (deleting old entries) ...")
+    save_database_entities(database_prs, database_onboarding_statuses, configuration)
+    print("Finished importing data successfully")

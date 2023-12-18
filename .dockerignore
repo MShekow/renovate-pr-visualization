@@ -1,0 +1,7 @@
+.*
+Dockerfile
+docker-compose.yaml
+venv
+metabase-data
+experiment*
+**/*.md

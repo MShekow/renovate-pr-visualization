@@ -1,0 +1,56 @@
+# This docker-compose file defines a PostgreSQL server and a metabase service
+services:
+  metabase:
+    image: metabase/metabase  # TODO fix version
+    restart: always
+    ports:
+      - 3000:3000
+    environment:
+      MB_DB_FILE: "/metabase-data/metabase.db"
+    volumes:
+      - ./metabase-data:/metabase-data
+    networks:
+      - metabase
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  datascraper:
+    image: renovate-datascraper:latest
+    build:
+      context: .
+    container_name: datascraper
+    restart: no
+    env_file: .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    networks:
+      - metabase
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:14.5
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_USER: metabase
+      POSTGRES_DB: metabase
+    ports:
+      - 5432:5432
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - metabase
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "metabase" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+networks:
+  metabase:
+
+volumes:
+  postgres-data:

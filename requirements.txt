@@ -1,4 +1,5 @@
 SQLAlchemy==2.0.23
+sqlalchemy-utils==0.41.1
 githubkit==0.10.7
 psycopg2-binary==2.9.9
 marko==2.0.2

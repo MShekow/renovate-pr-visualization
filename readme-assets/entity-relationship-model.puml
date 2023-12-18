@@ -1,0 +1,66 @@
+@startuml
+' Based on: https://gist.github.com/QuantumGhost/0955a45383a0b6c0bc24f9654b3cb561
+
+' uncomment the line below if you're using computer with a retina display
+' skinparam dpi 300
+!define Table(name,desc) class name as "desc" << (T,#FFAAAA) >>
+' we use bold for primary key
+' green color for unique
+' and underscore for not_null
+!define primary_key(x) <b>x</b>
+!define unique(x) <color:green>x</color>
+!define not_null(x) <u>x</u>
+hide methods
+hide stereotypes
+
+' entities
+
+Table(dependency_update, "dependency_update") {
+    primary_key(id) INTEGER
+    not_null(dependency_name) VARCHAR[200]
+    not_null(old_version) VARCHAR[50]
+    not_null(new_version) VARCHAR[50]
+    not_null(update_type) ENUM[patch, minor, major, multiple-major]
+}
+
+Table(pull_request, "pull_request") {
+    primary_key(id) INTEGER
+    not_null(repo) VARCHAR[200]
+    not_null(created_date) TIMESTAMP
+    closed_date TIMESTAMP
+    close_type ENUM[merge, close]
+    not_null(number) INTEGER
+    not_null(url) VARCHAR[200]
+}
+
+Table(repository_onboarding_status, "repository_onboarding_status") {
+    primary_key(id) INTEGER
+    not_null(repo) VARCHAR[200]
+    not_null(sample_date) TIMESTAMP
+    not_null(onboarded) ENUM[onboarded, in_progress, disabled]
+}
+
+note top of "dependency_update"
+**Legend:**
+
+primary_key(abc) means "primary key"
+not_null(abc) means "not null"
+abc means that the value may be null
+end note
+
+note left of "dependency_update"
+dependency_name is e.g. "vite"
+(or whatever the **Package** column of the PR body states)
+end note
+
+note left of "pull_request"
+repo has the format "owner/repo"
+
+number is the PR number as shown in the URL
+
+url is the URL of the PR (not of the REST API, but of the HTML/web UI)
+end note
+
+dependency_update "1..*" --> "1" pull_request : "dependency_update.pr_id" points\nto the Pull Request from whose body the\ndependency was parsed
+
+@enduml
