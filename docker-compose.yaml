@@ -1,7 +1,7 @@
 # This docker-compose file defines a PostgreSQL server and a metabase service
 services:
   metabase:
-    image: metabase/metabase  # TODO fix version
+    image: metabase/metabase:v0.48.0
     restart: always
     ports:
       - 3000:3000
