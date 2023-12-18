@@ -390,11 +390,13 @@ def get_repository_onboarding_status(onboarding_prs: list[PullRequestSimple],
     whatever is the default branch now, has also been the default branch at any point in the past.
     """
     github = GitHub(config.github_pat, base_url=config.github_base_url)
+
+    week_start_dates = get_sampling_dates(config)
+    cutoff_date = week_start_dates[0] - timedelta(weeks=1)  # add one week to have some "leeway"
+
     onboarding_statuses: list[RepositoryOnboardingStatus] = []
     for owner, repo in config.github_repos:
         onboarding_prs = get_onboarding_prs_for_repo(onboarding_prs, owner, repo)
-        week_start_dates = get_sampling_dates(config)
-        cutoff_date = week_start_dates[0] - timedelta(weeks=1)  # add one week to have some "leeway"
         commit_helper = GitCommitHelper(github, owner, repo, cutoff_date=cutoff_date)
 
         for week_start_date in week_start_dates:

@@ -94,6 +94,8 @@ class DependenciesWithPullRequestsView(Base):
         selectable=select(
             DependencyUpdate.id,
             DependencyUpdate.dependency_name,
+            DependencyUpdate.old_version,
+            DependencyUpdate.new_version,
             DependencyUpdate.update_type,
             PullRequest.id.label('pr_id'),
             PullRequest.created_date,

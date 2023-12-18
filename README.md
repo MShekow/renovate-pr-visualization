@@ -71,6 +71,6 @@ The database model looks as follows:
 
 To run this tool, follow these steps:
 - Create a copy of the `.env.example` file (name it `.env`), and change the configuration values, which are documented in the file
-- Run `docker compose up`, wait for the `datascraper` service/container to finish with exit code 0 (if exit code is 1, inspect the container logs for errors)
-- Open Metabase at http://localhost:3000, login with username `admin@site.org` and password `admin1!`, then navigate to the **Renovate dashboard**. This dashboard shows the data of _all_ Git repositories, but the _Repository_ filter at the top of the dashboard allows you to filter the entries to a specific repository.
-- Whenever you want to update the data, run `docker compose up datascraper` again
+- Run `docker compose up -d`, wait for the `datascraper` service/container to finish with exit code 0 (if exit code is 1, inspect the container logs for errors)
+- Open Metabase at http://localhost:3000, login with username `admin@site.org` and password `admin1!`, then navigate to the **Renovate dashboard**. This dashboard shows the data of _all_ Git repositories, but the _Repository_ filter at the top of the dashboard allows you to filter the entries down to a specific repository.
+- Whenever you want to update the Renovate data, run `docker compose up datascraper` again
