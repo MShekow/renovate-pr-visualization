@@ -3,6 +3,7 @@ from enum import Enum
 from typing import List
 from typing import Optional
 
+import sqlalchemy.types
 from sqlalchemy import ForeignKey, select
 from sqlalchemy import String
 from sqlalchemy.orm import DeclarativeBase
@@ -25,6 +26,14 @@ class OnboardingType(Enum):
     onboarded = "onboarded"
     in_progress = "in_progress"
     disabled = "disabled"
+
+
+class DependencyUpdateType(Enum):
+    patch = "patch"
+    minor = "minor"
+    major = "major"
+    multiple_major = "multiple-major"
+    security = "security"
 
 
 class RepositoryOnboardingStatus(Base):
@@ -66,7 +75,9 @@ class DependencyUpdate(Base):
     dependency_name: Mapped[str] = mapped_column(String(200))
     old_version: Mapped[str] = mapped_column(String(50))
     new_version: Mapped[str] = mapped_column(String(50))
-    update_type: Mapped[str] = mapped_column(String(20))
+    # Note: the values_callable is needed to use the values of the enum, not the names
+    update_type: Mapped[DependencyUpdateType] = mapped_column(
+        sqlalchemy.types.Enum(DependencyUpdateType, values_callable=lambda x: [i.value for i in x]))
 
     def __repr__(self) -> str:
         return f"DependencyUpdate(id={self.id!r}, pr={self.pull_request.number!r}," \

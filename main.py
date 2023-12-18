@@ -18,7 +18,8 @@ from packaging.version import Version, InvalidVersion
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from database_models import PullRequest, PrCloseType, DependencyUpdate, Base, RepositoryOnboardingStatus, OnboardingType
+from database_models import PullRequest, PrCloseType, DependencyUpdate, Base, RepositoryOnboardingStatus, \
+    OnboardingType, DependencyUpdateType
 
 
 @dataclass
@@ -30,6 +31,7 @@ class Configuration:
     renovate_pr_label: str
     renovate_pr_security_label: str
     renovate_github_user: Optional[str]
+    detect_multiple_major_updates: bool
     renovate_onboarding_pr_regex: Optional[str]
     renovate_onboarding_sampling_max_weeks: int
     renovate_onboarding_sampling_interval_weeks: int
@@ -50,6 +52,7 @@ def system_check() -> Configuration:
         renovate_pr_label=os.getenv("RENOVATE_PR_LABEL"),
         renovate_pr_security_label=os.getenv("RENOVATE_PR_SECURITY_LABEL"),
         renovate_github_user=os.getenv("RENOVATE_USER"),
+        detect_multiple_major_updates=os.getenv("RENOVATE_DETECT_MULTIPLE_MAJOR", "false") == "true",
         renovate_onboarding_pr_regex=os.getenv("RENOVATE_ONBOARDING_PR_REGEX", r"^Configure Renovate"),
         renovate_onboarding_sampling_max_weeks=int(os.getenv("RENOVATE_ONBOARDING_STATUS_SAMPLING_MAX_PAST_WEEKS")),
         renovate_onboarding_sampling_interval_weeks=int(
@@ -285,13 +288,15 @@ def add_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestSim
                              f"dependency {dependency_name}: {e}") from None
 
         if has_label(renovate_pr, config.renovate_pr_security_label):
-            update_type = "security"
+            update_type = DependencyUpdateType.security
         elif old_version.major != new_version.major:
-            update_type = "major"
+            update_type = DependencyUpdateType.major
+            if config.detect_multiple_major_updates and (new_version.major - old_version.major) > 1:
+                update_type = DependencyUpdateType.multiple_major
         elif old_version.minor != new_version.minor:
-            update_type = "minor"
+            update_type = DependencyUpdateType.minor
         else:
-            update_type = "patch"
+            update_type = DependencyUpdateType.patch
 
         database_pr.dependency_updates.append(
             DependencyUpdate(
