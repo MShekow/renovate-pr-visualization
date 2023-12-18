@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from githubkit import GitHub
+from githubkit.utils import UNSET
 from sqlalchemy import create_engine
 
 
@@ -69,7 +70,7 @@ def load_and_verify_configuration() -> Configuration:
 
     # Check the GitHub API configuration
     github = GitHub(configuration.github_pat, base_url=configuration.github_base_url)
-    github.rest.users.get_authenticated()
+    authenticated_user = github.rest.users.get_authenticated()
 
     # Verify that all specified repositories exist, and also expand the repositories of organizations
     for owner_or_repo in github_repos_and_owners:
@@ -82,7 +83,19 @@ def load_and_verify_configuration() -> Configuration:
             else:
                 configuration.github_repos.append((owner, repo))
         else:
-            for repo in github.paginate(github.rest.repos.list_for_org, org=owner_or_repo):
+            if owner_or_repo.startswith("user:"):
+                owner_or_repo = owner_or_repo[5:]
+                if authenticated_user.parsed_data.login.lower() == owner_or_repo:
+                    sdk_function = github.rest.repos.list_for_authenticated_user
+                    kwargs = {"affiliation": "owner", "type": UNSET}
+                else:
+                    sdk_function = github.rest.repos.list_for_user
+                    kwargs = {"username": owner_or_repo}
+            else:
+                sdk_function = github.rest.repos.list_for_org
+                kwargs = {"org": owner_or_repo}
+
+            for repo in github.paginate(sdk_function, **kwargs):
                 configuration.github_repos.append((owner_or_repo, repo.name))
 
     # Verify that there are no duplicates in configuration.github_repos (could happen if the user provides both
