@@ -142,7 +142,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestS
     markdown_document = gfm.parse(renovate_pr.body)
 
     dependencies_table: Optional[Table] = None
-    for child in markdown_document.children[:5]:
+    for child in markdown_document.children:
         if isinstance(child, Table):
             dependencies_table = child
             break
