@@ -20,7 +20,7 @@ Table(dependency_update, "dependency_update") {
     not_null(dependency_name) VARCHAR[200]
     not_null(old_version) VARCHAR[50]
     not_null(new_version) VARCHAR[50]
-    not_null(update_type) ENUM[patch, minor, major, multiple-major]
+    not_null(update_type) ENUM[digest, patch, minor, major, multiple-major, security]
 }
 
 Table(pull_request, "pull_request") {
@@ -50,7 +50,8 @@ end note
 
 note left of "dependency_update"
 dependency_name is e.g. "vite"
-(or whatever the **Package** column of the PR body states)
+(or whatever the **Package** column in the table
+of the PR body states)
 end note
 
 note left of "pull_request"

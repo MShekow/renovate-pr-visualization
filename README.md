@@ -4,7 +4,16 @@ This is a turn key solution that visualizes your [Renovate Bot](https://docs.ren
 
 All you need to do is provide a few configuration values and run `docker compose up` to get access to a dashboard that looks as follows:
 
-TODO show screenshot(s)
+![Screenshot of the dashboard](./readme-assets/dashboard-example.png)
+
+The above screenshot shows the state of the [cypress](https://github.com/cypress-io/cypress) repository as of 2023-12-19 (note: the dashboard comes with _filters_ for the start and end date, and for choosing a specific repository, the filters are not shown in the screenshot):
+- The **top** graph shows the number of open Renovate PRs over time, with one sample point per week (Monday at UTC midnight), grouped by the type of dependency update (e.g. "major", "minor", "patch", "digest", "security")
+- The **left center** graph is meaningless for _individual_ repositories: it is meant to be used in case you instruct the tool to scrape _many_ repositories, and you want to know the Renovate onboarding status of the repositories, over time:
+  - "onboarded": if there is a `renovate.json[5]` file in the root of the repo's default branch
+  - "onboarding": if there is a "Configure Renovate" PR open
+  - "disabled": if both "onboarded" and "onboarding" are false
+- The **right center** graph shows the average time it took to close a Renovate PR
+- The **bottom** graph is simply a tabular view into the database
 
 ## Why do I need this?
 
@@ -14,12 +23,13 @@ Using this tool will improve your understanding regarding:
 
 - how your technical debt has _evolved over time_: for instance, if the number (or severity) of the PRs keeps increasing, you may want to consider granting your development team a larger "budget" for updating outdated dependencies
 - how long does it take the development team to address (that is, close) Renovate PRs, on average
+- in case you have _many_ repositories: how many of them have been onboarded to Renovate, how has this changed over time
 
 ## How it works
 
 ![Architecture diagram](./readme-assets/architecture.png)
 
-This tool comes with preconfigured **Docker compose** setup that uses [Metabase](https://www.metabase.com/) to draw a dashboard that visualizes your Renovate Pull Requests. But you could use any other "business intelligence" tool of your choice, or replace the PostgreSQL database with another relational database. The most complex SQL query is the one that computes how many PRs are open at a given point in time:
+This tool comes with a preconfigured **Docker compose** setup that uses [Metabase](https://www.metabase.com/) to draw a dashboard that visualizes your Renovate Pull Requests. But you could use any other "business intelligence" tool of your choice, or replace the PostgreSQL database with another relational database. The most complex SQL query is the one that computes how many PRs are open at a given point in time:
 
 <details>
   <summary>Example for SQL query</summary>
@@ -62,7 +72,7 @@ The database model looks as follows:
 > - The tool needs a clear way to identify the PRs created by Renovate
 >   - PRs could be created by a specific functional user (on GitHub **.com** this is`renovate[bot]`)
 >   - You could assign a _label_ to the PRs (in your `renovate.json` file, set `labels` e.g. to `["dependencies"]`)
-> - The tool needs a clear way to identify security PRs, e.g. by putting the following snippet into your `renovate.json` file:
+> - The tool needs a clear way to identify **security** PRs, e.g. by putting the following snippet into your `renovate.json` file:
 >   ```json
 >   "vulnerabilityAlerts": {
 >        "labels": ["security", "dependencies"],

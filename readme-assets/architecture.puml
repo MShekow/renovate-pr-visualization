@@ -7,7 +7,7 @@
 
 title (C4 Model) Container diagram for Renovate PR visualization tool
 
-Person(user, User, "A customer of the bank, with personal bank accounts")
+Person(user, User, "A developer or other kind of team member interested in statistics of Renovate PRs")
 
 System_Ext(github, "GitHub (Enterprise)", "<$github>\n\nStores all Git repos, including PRs from Renovate")
 
