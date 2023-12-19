@@ -34,7 +34,7 @@ When you use this tool you'll better understand:
 
 This tool comes with a pre-configured **Docker Compose** setup that uses [Metabase](https://www.metabase.com/) to draw a dashboard that visualizes your Renovate Pull Requests.
 But you may use another "business intelligence" tool, or replace the PostgreSQL database with another relational database. 
-he most complex SQL query is the one that computes how many PRs are open at a given point in time:
+The most complex SQL query is the one that computes how many PRs are open at a given point in time:
 
 <details>
   <summary>Example for SQL query</summary>
