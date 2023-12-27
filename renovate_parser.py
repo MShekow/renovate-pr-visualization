@@ -5,6 +5,7 @@ statuses.
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional, MutableMapping
 
 from github import Auth, Github, UnknownObjectException
@@ -17,6 +18,7 @@ from marko.inline import Link, InlineElement, CodeSpan, RawText
 from packaging.version import Version, InvalidVersion
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from tqdm import tqdm
 
 from conf import Configuration
 from database_models import PullRequest, PrCloseType, DependencyUpdate, Base, RepositoryOnboardingStatus, \
@@ -85,7 +87,8 @@ def get_renovate_prs(config: Configuration) -> RenovatePrs:
 
     renovate_prs = RenovatePrs()
 
-    for owner, repo in config.github_repos:
+    iterator = tqdm(config.github_repos, ncols=80)
+    for owner, repo in iterator:
         for pr in github.get_repo(f"{owner}/{repo}").get_pulls(state="all"):
             if config.renovate_github_user is None or pr.user.login == config.renovate_github_user:
                 if onboarding_title_regex.search(pr.title):
@@ -95,6 +98,10 @@ def get_renovate_prs(config: Configuration) -> RenovatePrs:
                 if not config.renovate_pr_label or has_label(pr, config.renovate_pr_label):
                     if has_relevant_pr_title(pr.title):
                         renovate_prs.dependency_prs.append(pr)
+
+        # Work around issue https://github.com/tqdm/tqdm/issues/771
+        if Path("/.dockerenv").exists():
+            print(iterator)
 
     return renovate_prs
 
@@ -404,7 +411,8 @@ def get_repository_onboarding_status(onboarding_prs: list[GitHubPullRequest],
     cutoff_date = week_start_dates[0] - timedelta(weeks=1)  # add one week to have some "leeway"
 
     onboarding_statuses: list[RepositoryOnboardingStatus] = []
-    for owner, repo in config.github_repos:
+    iterator = tqdm(config.github_repos, ncols=80)
+    for owner, repo in iterator:
         onboarding_prs = get_onboarding_prs_for_repo(onboarding_prs, owner, repo)
         commit_helper = GitCommitHelper(github, owner, repo, cutoff_date=cutoff_date)
 
@@ -423,5 +431,9 @@ def get_repository_onboarding_status(onboarding_prs: list[GitHubPullRequest],
                     sample_date=week_start_date,
                 )
             )
+
+        # Work around issue https://github.com/tqdm/tqdm/issues/771
+        if Path("/.dockerenv").exists():
+            print(iterator)
 
     return onboarding_statuses
