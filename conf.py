@@ -37,7 +37,7 @@ def load_and_verify_configuration() -> Configuration:
         renovate_pr_security_label=os.getenv("RENOVATE_PR_SECURITY_LABEL"),
         renovate_github_user=os.getenv("RENOVATE_USER"),
         detect_multiple_major_updates=os.getenv("RENOVATE_DETECT_MULTIPLE_MAJOR", "false") == "true",
-        renovate_onboarding_pr_regex=os.getenv("RENOVATE_ONBOARDING_PR_REGEX", r"^Configure Renovate"),
+        renovate_onboarding_pr_regex=os.getenv("RENOVATE_ONBOARDING_PR_REGEX") or r"^Configure Renovate",
         renovate_onboarding_sampling_max_weeks=int(os.getenv("RENOVATE_ONBOARDING_STATUS_SAMPLING_MAX_PAST_WEEKS")),
         renovate_onboarding_sampling_interval_weeks=int(
             os.getenv("RENOVATE_ONBOARDING_STATUS_SAMPLING_INTERVAL_IN_WEEKS")),
