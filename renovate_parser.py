@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional, MutableMapping
 
-import dateparser
-from githubkit import GitHub
-from githubkit.exception import RequestFailed
-from githubkit.rest import PullRequestSimple, Commit, GitTree
+from github import Auth, Github, UnknownObjectException
+from github.Commit import Commit
+from github.GitTree import GitTree
+from github.PullRequest import PullRequest as GitHubPullRequest
 from marko.ext.gfm import gfm
 from marko.ext.gfm.elements import Table
 from marko.inline import Link, InlineElement, CodeSpan, RawText
@@ -60,7 +60,7 @@ def has_relevant_pr_title(renovate_pr_title: str) -> bool:
     return False
 
 
-def has_label(pr: PullRequestSimple, label: str) -> bool:
+def has_label(pr: GitHubPullRequest, label: str) -> bool:
     """
     Returns whether the given PR has the specified label.
     """
@@ -72,21 +72,21 @@ def has_label(pr: PullRequestSimple, label: str) -> bool:
 
 @dataclass
 class RenovatePrs:
-    dependency_prs: list[PullRequestSimple] = field(default_factory=list)
-    onboarding_prs: list[PullRequestSimple] = field(default_factory=list)
+    dependency_prs: list[GitHubPullRequest] = field(default_factory=list)
+    onboarding_prs: list[GitHubPullRequest] = field(default_factory=list)
 
 
 def get_renovate_prs(config: Configuration) -> RenovatePrs:
     """
     Returns all those PRs from the specified repositories that were created by Renovate and that have a relevant title.
     """
-    github = GitHub(config.github_pat, base_url=config.github_base_url)
+    github = Github(auth=Auth.Token(config.github_pat), base_url=config.github_base_url)
     onboarding_title_regex = re.compile(config.renovate_onboarding_pr_regex)
 
     renovate_prs = RenovatePrs()
 
     for owner, repo in config.github_repos:
-        for pr in github.paginate(github.rest.pulls.list, owner=owner, repo=repo, state="all"):
+        for pr in github.get_repo(f"{owner}/{repo}").get_pulls(state="all"):
             if config.renovate_github_user is None or pr.user.login == config.renovate_github_user:
                 if onboarding_title_regex.search(pr.title):
                     renovate_prs.onboarding_prs.append(pr)
@@ -132,7 +132,7 @@ def is_digest_version(version: str) -> bool:
     return DIGEST_REGEX.match(version) is not None
 
 
-def parse_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestSimple,
+def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRequest,
                              config: Configuration) -> list[DependencyUpdate]:
     """
     Parses the MarkDown body of the given Renovate PR and returns all dependency updates.
@@ -243,7 +243,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: PullRequestS
     return dependency_updates
 
 
-def get_database_entities(renovate_prs: list[PullRequestSimple], config: Configuration) -> list[PullRequest]:
+def get_database_entities(renovate_prs: list[GitHubPullRequest], config: Configuration) -> list[PullRequest]:
     """
     Creates the database entities (PullRequest and DependencyUpdate) by parsing the provided PRs.
     """
@@ -293,8 +293,8 @@ def save_database_entities(database_prs: list[PullRequest],
         session.commit()
 
 
-def get_onboarding_prs_for_repo(onboarding_prs: list[PullRequestSimple],
-                                owner: str, repo: str) -> list[PullRequestSimple]:
+def get_onboarding_prs_for_repo(onboarding_prs: list[GitHubPullRequest],
+                                owner: str, repo: str) -> list[GitHubPullRequest]:
     """
     Returns all those PRs from the provided list that are for the specified repository.
     """
@@ -302,23 +302,17 @@ def get_onboarding_prs_for_repo(onboarding_prs: list[PullRequestSimple],
 
 
 class GitCommitHelper:
-    def __init__(self, github_client: GitHub, owner: str, repo: str, cutoff_date: datetime):
-        default_branch = github_client.rest.repos.get(owner=owner, repo=repo).parsed_data.default_branch
-        self._github_client = github_client
+    def __init__(self, github_client: Github, owner: str, repo: str, cutoff_date: datetime):
+        self._repo = github_client.get_repo(f"{owner}/{repo}")
         self._owner = owner
-        self._repo = repo
         self._cached_trees: MutableMapping[str, GitTree] = {}  # key is the SHA of the commit
 
         try:
-            self._commits: list[Commit] = [
-                commit for commit in
-                github_client.paginate(github_client.rest.repos.list_commits, owner=owner, repo=repo,
-                                       sha=default_branch, since=cutoff_date)
-            ]
-        except RequestFailed as e:
+            self._commits = [commit for commit in
+                             self._repo.get_commits(sha=self._repo.default_branch, since=cutoff_date)]
+        except UnknownObjectException:
             # Repository might still be empty, or the default branch might have been renamed
-            if e.response.status_code == 409:
-                self._commits = []
+            self._commits: list[Commit] = []
 
         # The GitHub API returns the commits in reverse chronological order, but we want them in chronological order
         self._commits.reverse()
@@ -331,8 +325,7 @@ class GitCommitHelper:
             return None
         closest_commit = self._commits[0]
         for commit in self._commits[1:]:
-            commit_date = dateparser.parse(commit.commit.author.date)
-            if commit_date <= sample_datetime:
+            if commit.commit.author.date <= sample_datetime:
                 closest_commit = commit
             else:
                 break
@@ -341,8 +334,7 @@ class GitCommitHelper:
 
     def _get_tree(self, sha: str) -> GitTree:
         if sha not in self._cached_trees:
-            self._cached_trees[sha] = self._github_client.rest.git.get_tree(owner=self._owner, repo=self._repo,
-                                                                            tree_sha=sha).parsed_data
+            self._cached_trees[sha] = self._repo.get_git_tree(sha=sha)
         return self._cached_trees[sha]
 
     def contains_renovate_json_file(self, sample_datetime: datetime) -> bool:
@@ -356,7 +348,7 @@ class GitCommitHelper:
         return False
 
 
-def has_renovate_onboarding_pr(onboarding_prs: list[PullRequestSimple], sample_datetime: datetime,
+def has_renovate_onboarding_pr(onboarding_prs: list[GitHubPullRequest], sample_datetime: datetime,
                                sampling_interval_weeks: int) -> bool:
     """
     Returns True if there is an onboarding PR that has been created at/before sample_datetime and that was still
@@ -392,7 +384,7 @@ def get_sampling_dates(config: Configuration) -> list[datetime]:
     return sampling_dates
 
 
-def get_repository_onboarding_status(onboarding_prs: list[PullRequestSimple],
+def get_repository_onboarding_status(onboarding_prs: list[GitHubPullRequest],
                                      config: Configuration) -> list[RepositoryOnboardingStatus]:
     """
     Extracts the RepositoryOnboardingStatus database entities for the provided repositories, sampling them in regular
@@ -406,7 +398,7 @@ def get_repository_onboarding_status(onboarding_prs: list[PullRequestSimple],
     Note that for determining the onboarding status, only the DEFAULT Git branch is considered, and we assume that
     whatever is the default branch now, has also been the default branch at any point in the past.
     """
-    github = GitHub(config.github_pat, base_url=config.github_base_url)
+    github = Github(auth=Auth.Token(config.github_pat), base_url=config.github_base_url)
 
     week_start_dates = get_sampling_dates(config)
     cutoff_date = week_start_dates[0] - timedelta(weeks=1)  # add one week to have some "leeway"

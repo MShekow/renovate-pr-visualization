@@ -1,7 +1,6 @@
 SQLAlchemy==2.0.23
 sqlalchemy-utils==0.41.1
-githubkit==0.10.7
+PyGithub==2.1.1
 psycopg2-binary==2.9.9
 marko==2.0.2
 packaging==23.2
-dateparser==1.2.0

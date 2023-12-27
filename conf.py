@@ -2,8 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from githubkit import GitHub
-from githubkit.utils import UNSET
+from github import Github, Auth
 from sqlalchemy import create_engine
 
 
@@ -69,15 +68,15 @@ def load_and_verify_configuration() -> Configuration:
     connection.close()
 
     # Check the GitHub API configuration
-    github = GitHub(configuration.github_pat, base_url=configuration.github_base_url)
-    authenticated_user = github.rest.users.get_authenticated()
+    github = Github(auth=Auth.Token(configuration.github_pat), base_url=configuration.github_base_url)
+    authenticated_user = github.get_user()
 
     # Verify that all specified repositories exist, and also expand the repositories of organizations
     for owner_or_repo in github_repos_and_owners:
         if '/' in owner_or_repo:
             owner, repo = owner_or_repo.split("/")
             try:
-                github.rest.repos.get(owner=owner, repo=repo)
+                github.get_repo(owner_or_repo)
             except Exception as e:
                 raise ValueError(f"Unable to find repository {owner_or_repo}, aborting: {e}")
             else:
@@ -85,17 +84,17 @@ def load_and_verify_configuration() -> Configuration:
         else:
             if owner_or_repo.startswith("user:"):
                 owner_or_repo = owner_or_repo[5:]
-                if authenticated_user.parsed_data.login.lower() == owner_or_repo:
-                    sdk_function = github.rest.repos.list_for_authenticated_user
-                    kwargs = {"affiliation": "owner", "type": UNSET}
+                if authenticated_user.login.lower() == owner_or_repo:
+                    sdk_function = authenticated_user.get_repos
+                    kwargs = {"type": "owner"}
                 else:
-                    sdk_function = github.rest.repos.list_for_user
-                    kwargs = {"username": owner_or_repo}
+                    sdk_function = github.get_user(owner_or_repo).get_repos
+                    kwargs = {}
             else:
-                sdk_function = github.rest.repos.list_for_org
-                kwargs = {"org": owner_or_repo}
+                sdk_function = github.get_organization(owner_or_repo).get_repos
+                kwargs = {}
 
-            for repo in github.paginate(sdk_function, **kwargs):
+            for repo in sdk_function(**kwargs):
                 configuration.github_repos.append((owner_or_repo, repo.name))
 
     # Verify that there are no duplicates in configuration.github_repos (could happen if the user provides both
