@@ -6,12 +6,8 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, MutableMapping
+from typing import Optional
 
-from github import Auth, Github, UnknownObjectException
-from github.Commit import Commit
-from github.GitTree import GitTree
-from github.PullRequest import PullRequest as GitHubPullRequest
 from marko.ext.gfm import gfm
 from marko.ext.gfm.elements import Table
 from marko.inline import Link, InlineElement, CodeSpan, RawText
@@ -20,9 +16,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from tqdm import tqdm
 
+from abstractions import PullRequest, GitRepository, NoCommitsFoundError, GitCommit
 from conf import Configuration
-from database_models import PullRequest, PrCloseType, DependencyUpdate, Base, RepositoryOnboardingStatus, \
-    OnboardingType, DependencyUpdateType
+from database_models import PullRequest as PullRequestDb, PrCloseType, DependencyUpdate, Base, \
+    RepositoryOnboardingStatus, OnboardingType, DependencyUpdateType
 
 PR_TITLE_REGEX = re.compile(r"^(chore|fix)\(deps\): (bump|update) ")
 
@@ -62,42 +59,30 @@ def has_relevant_pr_title(renovate_pr_title: str) -> bool:
     return False
 
 
-def has_label(pr: GitHubPullRequest, label: str) -> bool:
-    """
-    Returns whether the given PR has the specified label.
-    """
-    for pr_label in pr.labels:
-        if pr_label.name == label:
-            return True
-    return False
-
-
 @dataclass
 class RenovatePrs:
-    dependency_prs: list[GitHubPullRequest] = field(default_factory=list)
-    onboarding_prs: list[GitHubPullRequest] = field(default_factory=list)
+    dependency_prs: list[PullRequest] = field(default_factory=list)
+    onboarding_prs: list[PullRequest] = field(default_factory=list)
 
 
 def get_renovate_prs(config: Configuration) -> RenovatePrs:
     """
     Returns all those PRs from the specified repositories that were created by Renovate and that have a relevant title.
     """
-    github = Github(auth=Auth.Token(config.github_pat), base_url=config.github_base_url)
     onboarding_title_regex = re.compile(config.renovate_onboarding_pr_regex)
 
     renovate_prs = RenovatePrs()
 
-    iterator = tqdm(config.github_repos, ncols=80)
-    for owner, repo in iterator:
-        for pr in github.get_repo(f"{owner}/{repo}").get_pulls(state="all"):
-            if config.renovate_github_user is None or pr.user.login == config.renovate_github_user:
-                if onboarding_title_regex.search(pr.title):
-                    renovate_prs.onboarding_prs.append(pr)
-                    continue
+    iterator = tqdm(config.repos, ncols=80)
+    for git_repo in iterator:
+        for pr in git_repo.get_pull_requests(pr_author_username=config.renovate_scm_user, renovate_pr_label=config.renovate_pr_label):
+            if onboarding_title_regex.search(pr.title):
+                renovate_prs.onboarding_prs.append(pr)
+                continue
 
-                if not config.renovate_pr_label or has_label(pr, config.renovate_pr_label):
-                    if has_relevant_pr_title(pr.title):
-                        renovate_prs.dependency_prs.append(pr)
+            if not config.renovate_pr_label or config.renovate_pr_label in pr.labels:
+                if has_relevant_pr_title(pr.title):
+                    renovate_prs.dependency_prs.append(pr)
 
         # Work around issue https://github.com/tqdm/tqdm/issues/771
         if Path("/.dockerenv").exists():
@@ -139,14 +124,14 @@ def is_digest_version(version: str) -> bool:
     return DIGEST_REGEX.match(version) is not None
 
 
-def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRequest,
+def parse_dependency_updates(renovate_pr: PullRequest,
                              config: Configuration) -> list[DependencyUpdate]:
     """
     Parses the MarkDown body of the given Renovate PR and returns all dependency updates.
     """
     dependency_updates = []
     # Note: use the GitHub-flavored Markdown parser, which supports parsing tables
-    markdown_document = gfm.parse(renovate_pr.body)
+    markdown_document = gfm.parse(renovate_pr.description)
 
     dependencies_table: Optional[Table] = None
     for child in markdown_document.children:
@@ -154,7 +139,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRe
             dependencies_table = child
             break
     if not dependencies_table:
-        raise ValueError(f"Could not find dependencies table in PR {renovate_pr.html_url}")
+        raise ValueError(f"Could not find dependencies table in PR {renovate_pr.url}")
 
     # Determine the columns, because they are not always at the same position:
     # The first column is always the "Package" column which contains the package name.
@@ -163,7 +148,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRe
 
     # Verify that the table has the "Package" column
     if dependencies_table.head.children[0].children[0].children != "Package":
-        raise ValueError(f"Package column is missing in dependencies table in PR {renovate_pr.html_url}")
+        raise ValueError(f"Package column is missing in dependencies table in PR {renovate_pr.url}")
 
     # Find the "Change" column that contains the old and new version
     change_column_index = -1
@@ -173,7 +158,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRe
             break
 
     if change_column_index == -1:
-        raise ValueError(f"Change column is missing in dependencies table in PR {renovate_pr.html_url}")
+        raise ValueError(f"Change column is missing in dependencies table in PR {renovate_pr.url}")
 
     # Parse the dependency updates table
     for row in dependencies_table.children[1:]:  # note: row 0 is the header row
@@ -189,7 +174,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRe
         else:
             if not isinstance(row.children[0].children[0], Link):
                 raise ValueError(f"Unable to parse dependency table: expected Link, but got {row.children[0]!r} "
-                                 f"for PR {renovate_pr.html_url}")
+                                 f"for PR {renovate_pr.url}")
             dependency_name = row.children[0].children[0].children[0].children
 
         if type(dependency_name) != str:
@@ -212,7 +197,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRe
             raise ValueError(f"Unable to parse dependency table: expected "
                              f"Link(CodeSpan(oldversion), RawText(\" -> \"), CodeSpan(newversion)), or "
                              f"CodeSpan(oldversion), RawText(\" -> \"), CodeSpan(newversion), "
-                             f"but got {old_and_new_version_sequence!r} for PR {renovate_pr.html_url}")
+                             f"but got {old_and_new_version_sequence!r} for PR {renovate_pr.url}")
         old_version_str = old_and_new_version_sequence[0].children
         new_version_str = old_and_new_version_sequence[2].children
 
@@ -230,7 +215,7 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRe
                 raise ValueError(f"Unable to parse old/new versions '{old_version_str}' / '{new_version_str}' for "
                                  f"dependency {dependency_name}: {e}") from None
 
-            if has_label(renovate_pr, config.renovate_pr_security_label):
+            if config.renovate_pr_security_label in renovate_pr.labels:
                 update_type = DependencyUpdateType.security
             elif old_version.major != new_version.major:
                 update_type = DependencyUpdateType.major
@@ -250,34 +235,34 @@ def parse_dependency_updates(database_pr: PullRequest, renovate_pr: GitHubPullRe
     return dependency_updates
 
 
-def get_database_entities(renovate_prs: list[GitHubPullRequest], config: Configuration) -> list[PullRequest]:
+def get_database_entities(renovate_prs: list[PullRequest], config: Configuration) -> list[PullRequestDb]:
     """
     Creates the database entities (PullRequest and DependencyUpdate) by parsing the provided PRs.
     """
-    database_prs: list[PullRequest] = []
+    database_prs: list[PullRequestDb] = []
     for renovate_pr in renovate_prs:
-        closed_date = renovate_pr.closed_at or renovate_pr.merged_at
-        if renovate_pr.merged_at:
+        closed_date = renovate_pr.closed_date or renovate_pr.merged_date
+        if renovate_pr.merged_date:
             close_type = PrCloseType.merge
-        elif renovate_pr.closed_at:
+        elif renovate_pr.closed_date:
             close_type = PrCloseType.close
         else:
             close_type = None
 
-        database_pr = PullRequest(
-            repo=renovate_pr.base.repo.full_name,
-            created_date=renovate_pr.created_at,
+        database_pr = PullRequestDb(
+            repo=renovate_pr.repo.owner_and_name,
+            created_date=renovate_pr.created_date,
             closed_date=closed_date,
             close_type=close_type,
-            number=renovate_pr.number,
-            url=renovate_pr.html_url,
+            number=renovate_pr.pr_number,
+            url=renovate_pr.url,
         )
 
         try:
-            dependency_updates = parse_dependency_updates(database_pr, renovate_pr, config)
+            dependency_updates = parse_dependency_updates(renovate_pr, config)
             database_pr.dependency_updates.extend(dependency_updates)
         except ValueError as e:
-            print(f"Warning: skipping PR {renovate_pr.html_url}: {e}")
+            print(f"Warning: skipping PR {renovate_pr.url}: {e}")
             continue
 
         database_prs.append(database_pr)
@@ -285,7 +270,7 @@ def get_database_entities(renovate_prs: list[GitHubPullRequest], config: Configu
     return database_prs
 
 
-def save_database_entities(database_prs: list[PullRequest],
+def save_database_entities(database_prs: list[PullRequestDb],
                            database_onboarding_statuses: list[RepositoryOnboardingStatus],
                            configuration: Configuration) -> None:
     """
@@ -300,31 +285,15 @@ def save_database_entities(database_prs: list[PullRequest],
         session.commit()
 
 
-def get_onboarding_prs_for_repo(onboarding_prs: list[GitHubPullRequest],
-                                owner: str, repo: str) -> list[GitHubPullRequest]:
-    """
-    Returns all those PRs from the provided list that are for the specified repository.
-    """
-    return [pr for pr in onboarding_prs if pr.base.repo.full_name == f"{owner}/{repo}"]
-
-
 class GitCommitHelper:
-    def __init__(self, github_client: Github, owner: str, repo: str, cutoff_date: datetime):
-        self._repo = github_client.get_repo(f"{owner}/{repo}")
-        self._owner = owner
-        self._cached_trees: MutableMapping[str, GitTree] = {}  # key is the SHA of the commit
-
+    def __init__(self, git_repository: GitRepository, cutoff_date: datetime):
         try:
-            self._commits = [commit for commit in
-                             self._repo.get_commits(sha=self._repo.default_branch, since=cutoff_date)]
-        except UnknownObjectException:
+            self._commits = git_repository.get_commits(since=cutoff_date)
+        except NoCommitsFoundError:
             # Repository might still be empty, or the default branch might have been renamed
-            self._commits: list[Commit] = []
+            self._commits: list[GitCommit] = []
 
-        # The GitHub API returns the commits in reverse chronological order, but we want them in chronological order
-        self._commits.reverse()
-
-    def _get_closest_commit(self, sample_datetime: datetime) -> Optional[Commit]:
+    def _get_closest_commit(self, sample_datetime: datetime) -> Optional[GitCommit]:
         """
         Returns the closest commit to the given datetime.
         """
@@ -332,38 +301,33 @@ class GitCommitHelper:
             return None
         closest_commit = self._commits[0]
         for commit in self._commits[1:]:
-            if commit.commit.author.date <= sample_datetime:
+            if commit.author_or_commit_date <= sample_datetime:
                 closest_commit = commit
             else:
                 break
 
         return closest_commit
 
-    def _get_tree(self, sha: str) -> GitTree:
-        if sha not in self._cached_trees:
-            self._cached_trees[sha] = self._repo.get_git_tree(sha=sha)
-        return self._cached_trees[sha]
-
     def contains_renovate_json_file(self, sample_datetime: datetime) -> bool:
         closest_commit = self._get_closest_commit(sample_datetime)
         if not closest_commit:
             return False
 
-        for tree_entry in self._get_tree(closest_commit.sha).tree:
-            if tree_entry.path in ["renovate.json", "renovate.json5"]:
+        for tree_entry in closest_commit.get_tree():
+            if tree_entry in ["renovate.json", "renovate.json5"]:
                 return True
         return False
 
 
-def has_renovate_onboarding_pr(onboarding_prs: list[GitHubPullRequest], sample_datetime: datetime,
+def has_renovate_onboarding_pr(onboarding_prs: list[PullRequest], sample_datetime: datetime,
                                sampling_interval_weeks: int) -> bool:
     """
     Returns True if there is an onboarding PR that has been created at/before sample_datetime and that was still
     open after the sampling interval.
     """
     for pr in onboarding_prs:
-        if pr.created_at <= sample_datetime:
-            closed_date = pr.closed_at or pr.merged_at
+        if pr.created_date <= sample_datetime:
+            closed_date = pr.closed_date or pr.merged_date
             if closed_date is None or closed_date > sample_datetime + timedelta(weeks=sampling_interval_weeks):
                 return True
     return False
@@ -391,7 +355,7 @@ def get_sampling_dates(config: Configuration) -> list[datetime]:
     return sampling_dates
 
 
-def get_repository_onboarding_status(onboarding_prs: list[GitHubPullRequest],
+def get_repository_onboarding_status(onboarding_prs: list[PullRequest],
                                      config: Configuration) -> list[RepositoryOnboardingStatus]:
     """
     Extracts the RepositoryOnboardingStatus database entities for the provided repositories, sampling them in regular
@@ -405,28 +369,26 @@ def get_repository_onboarding_status(onboarding_prs: list[GitHubPullRequest],
     Note that for determining the onboarding status, only the DEFAULT Git branch is considered, and we assume that
     whatever is the default branch now, has also been the default branch at any point in the past.
     """
-    github = Github(auth=Auth.Token(config.github_pat), base_url=config.github_base_url)
-
     week_start_dates = get_sampling_dates(config)
     cutoff_date = week_start_dates[0] - timedelta(weeks=1)  # add one week to have some "leeway"
 
     onboarding_statuses: list[RepositoryOnboardingStatus] = []
-    iterator = tqdm(config.github_repos, ncols=80)
-    for owner, repo in iterator:
-        onboarding_prs = get_onboarding_prs_for_repo(onboarding_prs, owner, repo)
-        commit_helper = GitCommitHelper(github, owner, repo, cutoff_date=cutoff_date)
+    iterator = tqdm(config.repos, ncols=80)
+    for git_repository in iterator:
+        onboarding_prs_for_this_repo = [pr for pr in onboarding_prs if pr.repo == git_repository]
+        commit_helper = GitCommitHelper(git_repository, cutoff_date=cutoff_date)
 
         for week_start_date in week_start_dates:
             has_renovate_json_file = commit_helper.contains_renovate_json_file(week_start_date)
 
             onboarding_status = OnboardingType.onboarded if has_renovate_json_file else OnboardingType.disabled
-            if has_renovate_onboarding_pr(onboarding_prs, week_start_date,
+            if has_renovate_onboarding_pr(onboarding_prs_for_this_repo, week_start_date,
                                           config.renovate_onboarding_sampling_interval_weeks):
                 onboarding_status = OnboardingType.in_progress
 
             onboarding_statuses.append(
                 RepositoryOnboardingStatus(
-                    repo=f"{owner}/{repo}",
+                    repo=git_repository.owner_and_name,
                     onboarded=onboarding_status,
                     sample_date=week_start_date,
                 )
