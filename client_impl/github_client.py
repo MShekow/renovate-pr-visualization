@@ -2,11 +2,8 @@ from datetime import datetime
 from typing import Optional
 
 import github
-import github.AuthenticatedUser
-import github.Issue
-import github.PullRequest
 import github.Repository
-from dateutil import parser
+import github.AuthenticatedUser
 from github.Consts import DEFAULT_BASE_URL
 
 from abstractions import ScmClient, GitRepository, GitCommit, PullRequest
@@ -89,29 +86,24 @@ class GitHubRepository(GitRepository):
                           renovate_pr_label: Optional[str] = None) -> list[PullRequest]:
         prs: list[PullRequest] = []
 
-        query = f"repo:{self._gh_repo.full_name} is:pr"
-        if renovate_pr_label:
-            query += f' label:"{renovate_pr_label}"'
-        if pr_author_username:
-            query += f" author:{pr_author_username}"
+        # Note: the pulls API does not seem to be affected by GitHub rate limiting. While we could use the more
+        # efficient issues search API, it takes approximately as long as using the pulls API, because the issues
+        # search API is rate-limited. See Git commit df4f89062cfe7af5715beebcf20a4029836dc6c3 for the variant using
+        # the search API.
 
-        for issue_pr in  self._github_client.search_issues(query=query):
-            merged_date = None
-            # contains something like '2024-02-18T11:33:42Z'
-            merged_date_raw_str = issue_pr.pull_request.raw_data.get("merged_at")
-            if merged_date_raw_str:
-                merged_date = parser.parse(merged_date_raw_str)
-
-            prs.append(
-                PullRequest(title=issue_pr.title,
-                            description=issue_pr.body,
-                            labels=[label.name for label in issue_pr.labels],
-                            created_date=issue_pr.created_at,
-                            closed_date=issue_pr.closed_at,
-                            merged_date=merged_date,
-                            repo=self,
-                            pr_number=issue_pr.number,
-                            url=issue_pr.html_url)
-            )
+        for pr in self._gh_repo.get_pulls(state="all"):
+            if pr_author_username is None or pr.user.login == pr_author_username:
+                if renovate_pr_label is None or any(label.name == renovate_pr_label for label in pr.labels):
+                    prs.append(
+                        PullRequest(title=pr.title,
+                                    description=pr.body,
+                                    labels=[label.name for label in pr.labels],
+                                    created_date=pr.created_at,
+                                    closed_date=pr.closed_at,
+                                    merged_date=pr.merged_at,
+                                    repo=self,
+                                    pr_number=pr.number,
+                                    url=pr.html_url)
+                    )
 
         return prs
