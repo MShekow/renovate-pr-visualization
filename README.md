@@ -1,8 +1,8 @@
 # Renovate PR visualization
 
 This is a turnkey solution that shows your [Renovate](https://docs.renovatebot.com/) bot Pull Requests.
-Now you can see the "technical debt" of your GitHub repositories.
-For now, only GitHub is supported.
+Now you can see the "technical debt" of your git repositories.
+For now, only GitHub and GitLab are supported.
 
 Provide a few configuration values and run `docker compose up` to get a dashboard that looks like this:
 
