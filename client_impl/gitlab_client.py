@@ -14,10 +14,10 @@ class GitLabClient(ScmClient):
         super().__init__(pat, api_base_url)
         self._gitlab_client = gitlab.Gitlab(api_base_url, private_token=pat) if api_base_url else gitlab.Gitlab(
             private_token=pat)
-        self._gitlab_client.auth()
         self._authenticated_user: Optional[CurrentUser] = None
 
     def get_username(self) -> str:
+        self._gitlab_client.auth()
         if not self._authenticated_user:
             self._authenticated_user = self._gitlab_client.user
 
