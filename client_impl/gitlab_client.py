@@ -92,9 +92,9 @@ class GitLabRepository(GitRepository):
                         title=mr.title,
                         description=mr.description,
                         labels=mr.labels,
-                        created_date=mr.created_at,
-                        closed_date=mr.closed_at,
-                        merged_date=mr.merged_at,
+                        created_date=datetime.fromisoformat(mr.created_at),
+                        closed_date=datetime.fromisoformat(mr.closed_at) if mr.closed_at else None,
+                        merged_date=datetime.fromisoformat(mr.merged_at) if mr.merged_at else None,
                         repo=self,
                         pr_number=mr.iid,
                         url=mr.web_url
