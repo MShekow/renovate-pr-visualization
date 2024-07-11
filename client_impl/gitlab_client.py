@@ -23,6 +23,15 @@ class GitLabClient(ScmClient):
 
         return self._authenticated_user.username
 
+    def is_group(self, owner_or_username: str) -> bool:
+        try:
+            self._gitlab_client.groups.get(owner_or_username)
+            return True
+        except gitlab.exceptions.GitlabGetError as e:
+            if e.response_code == 404:
+                return False
+            raise e
+
     def get_repository(self, owner_and_name: str) -> GitRepository:
         project = self._gitlab_client.projects.get(owner_and_name)
         return GitLabRepository(owner_and_name, self._gitlab_client, project)
@@ -37,12 +46,28 @@ class GitLabClient(ScmClient):
                 projects = self._gitlab_client.projects.list(user_id=user.id)
         else:
             group = self._gitlab_client.groups.get(owner_or_username)
-            projects = group.projects.list()
+            projects = self._get_projects_from_groups_recursive(group)
 
         repos: List[GitRepository] = [GitLabRepository(project.id, self._gitlab_client, project) for project in
                                       projects]
 
         return repos
+
+    def _get_projects_from_groups_recursive(self, group: gitlab.v4.objects.Group) -> List[gitlab.v4.objects.Project]:
+        # Convert subproject objects (stored in group.projects) to "full" GitLab Project objects, which also have
+        # the mergerequests attribute
+        subprojects = group.projects.list()
+        projects: List[gitlab.v4.objects.Project] = []
+        for sub_project in subprojects:
+            projects.append(self._gitlab_client.projects.get(sub_project.id))
+
+        # Recursively get projects from subgroups
+        subgroups: List[gitlab.v4.objects.GroupSubgroup] = group.subgroups.list()
+        for subgroup in subgroups:
+            full_subgroup = self._gitlab_client.groups.get(subgroup.id)
+            projects.extend(self._get_projects_from_groups_recursive(full_subgroup))
+
+        return projects
 
 
 class GitLabCommit(GitCommit):
