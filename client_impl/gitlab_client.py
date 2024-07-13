@@ -24,6 +24,9 @@ class GitLabClient(ScmClient):
         return self._authenticated_user.username
 
     def is_group(self, owner_or_username: str) -> bool:
+        if owner_or_username.startswith("user:"):
+            return True
+
         try:
             self._gitlab_client.groups.get(owner_or_username)
             return True
@@ -43,7 +46,7 @@ class GitLabClient(ScmClient):
                 projects = self._gitlab_client.projects.list(owned=True, get_all=True)
             else:
                 user = self._gitlab_client.users.list(username=owner_or_username, get_all=True)[0]
-                projects = self._gitlab_client.projects.list(user_id=user.id, get_all=True)
+                projects = user.projects.list(owned=True, get_all=True)
         else:
             group = self._gitlab_client.groups.get(owner_or_username)
             projects = self._get_projects_from_groups_recursive(group)
