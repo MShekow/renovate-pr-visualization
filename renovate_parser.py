@@ -75,7 +75,9 @@ def get_renovate_prs(config: Configuration) -> RenovatePrs:
 
     iterator = tqdm(config.repos, ncols=80)
     for git_repo in iterator:
-        for pr in git_repo.get_pull_requests(pr_author_username=config.renovate_scm_user, renovate_pr_label=config.renovate_pr_label):
+        for pr in git_repo.get_pull_requests(pr_author_username=config.renovate_scm_user,
+                                             renovate_pr_label=config.renovate_pr_label,
+                                             ignore_pr_labels=config.ignore_pr_labels):
             if onboarding_title_regex.search(pr.title):
                 renovate_prs.onboarding_prs.append(pr)
                 continue
