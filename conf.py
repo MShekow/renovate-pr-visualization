@@ -78,13 +78,16 @@ def load_and_verify_configuration() -> Configuration:
 
     # Verify that all specified repositories exist, and also expand the repositories of organizations or users
     for owner_or_repo in repos_and_owners:
-        if '/' in owner_or_repo:
+        if scm_client.is_group(owner_or_repo):
+            try:
+                configuration.repos.extend(scm_client.get_repositories(owner_or_repo))
+            except Exception as e:
+                raise ValueError(f"Unable to find group/organization {owner_or_repo}, aborting: {e}")
+        else:
             try:
                 configuration.repos.append(scm_client.get_repository(owner_or_repo))
             except Exception as e:
                 raise ValueError(f"Unable to find repository {owner_or_repo}, aborting: {e}")
-        else:
-            configuration.repos.extend(scm_client.get_repositories(owner_or_repo))
 
     # Verify that there are no duplicates in configuration.repos (could happen if the user provides both
     # "some-owner" AND "some-owner/some-repo" in the environment variable REPOS)

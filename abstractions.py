@@ -98,6 +98,12 @@ class ScmClient(ABC):
         Retrieves the username for the provided PAT, verifying that the PAT is valid.
         """
 
+    def is_group(self, owner_or_username: str) -> bool:
+        """
+        Returns True if the provided owner_or_username refers to a group that contains multiple repositories (e.g. a
+        GitLab group or a GitHub organization), False otherwise.
+        """
+
     @abstractmethod
     def get_repository(self, owner_and_name: str) -> GitRepository:
         """
@@ -108,5 +114,5 @@ class ScmClient(ABC):
     def get_repositories(self, owner_or_username: str) -> list[GitRepository]:
         """
         Retrieves the list of repositories for the provided username. owner_or_username must either be an actual
-        username (format: "user:<username>") or an organization (format: "someorgname").
+        username (format: "user:<username>") or a group/organization (format: "someorgname" or "groupname/subgroup").
         """
