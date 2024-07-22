@@ -74,12 +74,14 @@ class GitRepository(ABC):
 
     @abstractmethod
     def get_pull_requests(self, pr_author_username: Optional[str] = None,
-                          renovate_pr_label: Optional[str] = None) -> list[PullRequest]:
+                          renovate_pr_label: Optional[str] = None,
+                          ignore_pr_labels: Optional[list[str]] = None) -> list[PullRequest]:
         """
         Retrieves the list of ALL pull requests (including closed ones) for this repository.
         If pr_author_username is provided, only PRs created by that user are returned.
         If renovate_pr_label is provided, only PRs with that label are returned.
         At least one of pr_author_username or renovate_pr_label must be provided.
+        If ignore_pr_labels is provided, PRs with any of these labels are not returned.
         """
 
 

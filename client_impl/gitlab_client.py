@@ -107,7 +107,8 @@ class GitLabRepository(GitRepository):
         return commits
 
     def get_pull_requests(self, pr_author_username: Optional[str] = None,
-                          renovate_pr_label: Optional[str] = None) -> List[PullRequest]:
+                          renovate_pr_label: Optional[str] = None,
+                          ignore_pr_labels: Optional[list[str]] = None) -> List[PullRequest]:
         prs: List[PullRequest] = []
         mr_params = {'state': 'all', 'get_all': True}
         if pr_author_username:
@@ -115,18 +116,19 @@ class GitLabRepository(GitRepository):
 
         for mr in self._gl_project.mergerequests.list(**mr_params):
             if renovate_pr_label is None or renovate_pr_label in [label for label in mr.labels]:
-                prs.append(
-                    PullRequest(
-                        title=mr.title,
-                        description=mr.description,
-                        labels=mr.labels,
-                        created_date=datetime.fromisoformat(mr.created_at),
-                        closed_date=datetime.fromisoformat(mr.closed_at) if mr.closed_at else None,
-                        merged_date=datetime.fromisoformat(mr.merged_at) if mr.merged_at else None,
-                        repo=self,
-                        pr_number=mr.iid,
-                        url=mr.web_url
+                if ignore_pr_labels is None or not any(label in ignore_pr_labels for label in mr.labels):
+                    prs.append(
+                        PullRequest(
+                            title=mr.title,
+                            description=mr.description,
+                            labels=mr.labels,
+                            created_date=datetime.fromisoformat(mr.created_at),
+                            closed_date=datetime.fromisoformat(mr.closed_at) if mr.closed_at else None,
+                            merged_date=datetime.fromisoformat(mr.merged_at) if mr.merged_at else None,
+                            repo=self,
+                            pr_number=mr.iid,
+                            url=mr.web_url
+                        )
                     )
-                )
 
         return prs

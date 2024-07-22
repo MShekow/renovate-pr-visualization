@@ -17,6 +17,7 @@ class Configuration:
     repos: list[GitRepository]
     renovate_pr_label: str
     renovate_pr_security_label: str
+    ignore_pr_labels: Optional[list[str]]
     renovate_scm_user: Optional[str]
     detect_multiple_major_updates: bool
     renovate_onboarding_pr_regex: Optional[str]
@@ -39,6 +40,7 @@ def load_and_verify_configuration() -> Configuration:
         repos=[],  # will be filled below
         renovate_pr_label=os.getenv("RENOVATE_PR_LABEL"),
         renovate_pr_security_label=os.getenv("RENOVATE_PR_SECURITY_LABEL"),
+        ignore_pr_labels=None,
         renovate_scm_user=os.getenv("RENOVATE_USER"),
         detect_multiple_major_updates=os.getenv("RENOVATE_DETECT_MULTIPLE_MAJOR", "false") == "true",
         renovate_onboarding_pr_regex=os.getenv("RENOVATE_ONBOARDING_PR_REGEX") or r"^Configure Renovate",
@@ -47,6 +49,9 @@ def load_and_verify_configuration() -> Configuration:
         renovate_onboarding_sampling_interval_weeks=int(
             os.getenv("RENOVATE_ONBOARDING_STATUS_SAMPLING_INTERVAL_IN_WEEKS")),
     )
+
+    if ignore_pr_labels := os.getenv("IGNORE_PR_LABELS", ""):
+        configuration.ignore_pr_labels = ignore_pr_labels.split(",")
 
     if not configuration.database_with_credentials:
         raise ValueError("Environment variable DATABASE_WITH_CREDS must be set "

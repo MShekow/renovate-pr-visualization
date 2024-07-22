@@ -89,7 +89,8 @@ class GitHubRepository(GitRepository):
         return commits
 
     def get_pull_requests(self, pr_author_username: Optional[str] = None,
-                          renovate_pr_label: Optional[str] = None) -> list[PullRequest]:
+                          renovate_pr_label: Optional[str] = None,
+                          ignore_pr_labels: Optional[list[str]] = None) -> list[PullRequest]:
         prs: list[PullRequest] = []
 
         # Note: the pulls API does not seem to be affected by GitHub rate limiting. While we could use the more
@@ -100,16 +101,17 @@ class GitHubRepository(GitRepository):
         for pr in self._gh_repo.get_pulls(state="all"):
             if pr_author_username is None or pr.user.login == pr_author_username:
                 if renovate_pr_label is None or any(label.name == renovate_pr_label for label in pr.labels):
-                    prs.append(
-                        PullRequest(title=pr.title,
-                                    description=pr.body,
-                                    labels=[label.name for label in pr.labels],
-                                    created_date=pr.created_at,
-                                    closed_date=pr.closed_at,
-                                    merged_date=pr.merged_at,
-                                    repo=self,
-                                    pr_number=pr.number,
-                                    url=pr.html_url)
-                    )
+                    if ignore_pr_labels is None or not any(label.name in ignore_pr_labels for label in pr.labels):
+                        prs.append(
+                            PullRequest(title=pr.title,
+                                        description=pr.body,
+                                        labels=[label.name for label in pr.labels],
+                                        created_date=pr.created_at,
+                                        closed_date=pr.closed_at,
+                                        merged_date=pr.merged_at,
+                                        repo=self,
+                                        pr_number=pr.number,
+                                        url=pr.html_url)
+                        )
 
         return prs
