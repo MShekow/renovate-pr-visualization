@@ -26,7 +26,7 @@ class GitHubClient(ScmClient):
         if owner_or_username.startswith("user:"):
             return True
 
-        return '/' in owner_or_username
+        return '/' not in owner_or_username
 
     def get_repository(self, owner_and_name: str) -> GitRepository:
         gh_repo = self._github_client.get_repo(owner_and_name)
