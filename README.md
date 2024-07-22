@@ -91,3 +91,8 @@ Follow these steps to run the tool:
 2. Run `docker compose up -d`, wait for the `datascraper` service/container to finish with exit code 0 (if exit code is 1, check the container logs for errors)
 3. Open Metabase at http://localhost:3000, login with username `admin@site.org` and password `admin1!`, then navigate to the **Renovate dashboard**. This dashboard shows the data of _all_ Git repositories, but the _Repository_ filter at the top of the dashboard allows you to filter the entries down to a specific repository
 4. Whenever you want to update the Renovate data, run `docker compose up datascraper` again
+
+> [!TIP]  
+> If you run Docker Desktop on macOS with an **Apple Silicon** (ARM64) chip, the public `metabase/metabase:vXXX` image may perform poorly or even crash, because it is only built for AMD/Intel CPU architectures (and the QEMU-based emulation of such images can be slow). You can easily build and use your own ARM-based image as follows:
+> 1. Build the Metabase ARM64-based image locally: `docker build -t metabase:local --build-arg metabase_version=v0.48.0 -f Dockerfile-metabase .`
+> 2. Edit the `docker-compose.yaml`, updating the `image:` reference for the `metabase` service to `metabase:local`
